@@ -13,10 +13,8 @@
 // limitations under the License.
 
 use orpc::common::{DurationUnit, FileUtils, LogConf, Utils};
-use orpc::sys::{CString, FFIUtils};
 use orpc::{err_box, sys, try_err, CommonResult};
 use serde::{Deserialize, Serialize};
-use std::ffi::c_char;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -163,13 +161,12 @@ impl FuseConf {
         Ok(())
     }
 
-    pub fn parse_fuse_opts(&self) -> Vec<CString> {
+    pub fn parse_fuse_opts(&self) -> Vec<String> {
         let mut opts = vec![];
-        opts.push(FFIUtils::new_cs_string("curvine-fuse"));
 
         for opt in &self.fuse_opts {
-            opts.push(FFIUtils::new_cs_string("-o"));
-            opts.push(FFIUtils::new_cs_string(opt.as_str()))
+            opts.push("-o".to_string());
+            opts.push(opt.to_string());
         }
 
         opts
@@ -216,30 +213,8 @@ impl FuseConf {
         Ok(path)
     }
 
-    pub fn convert_fuse_args(opts: &[CString]) -> Vec<*const c_char> {
-        let args = opts.iter().map(|x| x.as_ptr()).collect();
-
-        args
-    }
-
-    pub fn set_fuse_opts(&self, mount_options: &mut String) {
-        self.fuse_opts.iter().for_each(|opt| {
-            match opt.as_str() {
-                "default_permissions" => {
-                    mount_options.push_str(",default_permissions");
-                }
-                // "auto_unmount" => {
-                //     mount_options.push_str(",auto_unmount");
-                // },
-                "allow_other" => {
-                    mount_options.push_str(",allow_other");
-                }
-                "allow_root" => {
-                    mount_options.push_str(",allow_root");
-                }
-                _ => {}
-            }
-        });
+    pub fn get_fuse_opts(&self) -> Vec<String> {
+        self.fuse_opts.clone()
     }
 
     pub fn auto_umount(&self) -> bool {
