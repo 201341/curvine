@@ -14,6 +14,8 @@
 
 #![allow(unused, clippy::not_unsafe_ptr_arg_deref)]
 
+use log::info;
+
 use crate::err_box;
 use crate::handler::RpcFrame;
 use crate::io::IOResult;
@@ -24,14 +26,14 @@ use std::fs;
 use std::io::IoSlice;
 use std::path::Path;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::os::unix::io::AsRawFd;
 
 // It defines the underlying functions of the operating system, which is an encapsulation of the libc library functions.
 // The main supported systems are linux.
 
 // Get the file descriptor of an io object (file, network), and for non-linux systems, an error is returned.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub fn get_raw_io<T>(io: &T) -> IOResult<CInt>
 where
     T: AsRawFd,
@@ -39,18 +41,18 @@ where
     err_io!(io.as_raw_fd())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub fn get_raw_io<T>(_: &T) -> IOResult<CInt> {
     err_box!("Unsupported os")
 }
 
 pub fn close(raw_io: RawIO) -> IOResult<()> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         err_box!("Unsupported close raw id {}", raw_io)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     {
         unsafe {
             err_io!(libc::close(raw_io))?;
@@ -215,12 +217,12 @@ pub async fn splice_in_full(
 
 // Return to whether the current pipeline is blocking mode
 pub fn pipe_is_blocking(fd: RawIO) -> bool {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         true
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     {
         unsafe {
             let status_flags = libc::fcntl(fd, libc::F_GETFL);
@@ -231,12 +233,12 @@ pub fn pipe_is_blocking(fd: RawIO) -> bool {
 
 // Modify the pipeline blocking mode.
 pub fn set_pipe_blocking(fd: RawIO, blocking: bool) -> IOResult<()> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         err_box!("unsupported operation")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     {
         unsafe {
             let status_flags = err_io!(libc::fcntl(fd, libc::F_GETFL))?;
@@ -253,9 +255,37 @@ pub fn set_pipe_blocking(fd: RawIO, blocking: bool) -> IOResult<()> {
 }
 
 pub fn pipe2(size: usize) -> IOResult<[RawIO; 2]> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         err_box!("unsupported operation")
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        let mut fds: [RawIO; 2] = [-1, -1];
+        let res = unsafe { libc::pipe(fds.as_mut_ptr() as *mut libc::c_int) };
+        err_io!(res)?;
+
+        let res = unsafe { libc::pipe(fds.as_mut_ptr() as *mut libc::c_int) };
+        err_io!(res)?;
+
+        unsafe {
+            libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
+            
+            let flags0 = libc::fcntl(fds[0], libc::F_GETFL);
+            let flags1 = libc::fcntl(fds[1], libc::F_GETFL);
+            if flags0 >= 0 && flags1 >= 0 {
+                libc::fcntl(fds[0], libc::F_SETFL, flags0 | libc::O_NONBLOCK);
+                libc::fcntl(fds[1], libc::F_SETFL, flags1 | libc::O_NONBLOCK);
+            }
+        };
+
+        if size > 0 {
+            info!("Warning: set pipe size is not supported on macos/freebsd, requested size {}", size);
+        }
+
+        Ok(fds)
     }
 
     #[cfg(target_os = "linux")]
@@ -344,12 +374,12 @@ pub fn thread_name() -> String {
 }
 
 pub fn read(fd: RawIO, buf: &mut [u8]) -> IOResult<CInt> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         err_box!("unsupported operation")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     {
         let res = unsafe {
             use libc::{self, c_void, size_t};
@@ -374,12 +404,12 @@ pub fn read_full(fd: RawIO, buf: &mut [u8]) -> IOResult<()> {
 }
 
 pub fn writev(fd: RawIO, bufs: &[IoSlice<'_>]) -> IOResult<CInt> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         err_box!("unsupported operation")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     {
         let res =
             unsafe { libc::writev(fd, bufs.as_ptr() as *const libc::iovec, bufs.len() as CInt) };
@@ -445,9 +475,10 @@ pub fn vm_splice(fd: RawIO, iov: &[IoSlice<'_>]) -> IOResult<CInt> {
 //     ...
 // ) -> c_int
 pub fn open(path: &CString, flag: i32) -> IOResult<RawIO> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        err_box!("unsupported operation")
+        let res = unsafe { libc::open(path.as_ptr(), flag | libc::O_CLOEXEC) };
+        err_io!(res)
     }
 
     #[cfg(target_os = "linux")]
@@ -463,9 +494,15 @@ pub fn open(path: &CString, flag: i32) -> IOResult<RawIO> {
 //     ...
 // ) -> c_int
 pub fn ioctl(fd: RawIO, request: u64, arg: *mut libc::c_void) -> IOResult<CInt> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         err_box!("unsupported operation")
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        let res = unsafe { libc::ioctl(fd, request as libc::c_ulong, arg) };
+        err_io!(res)
     }
 
     #[cfg(target_os = "linux")]
@@ -476,11 +513,16 @@ pub fn ioctl(fd: RawIO, request: u64, arg: *mut libc::c_void) -> IOResult<CInt> 
 }
 
 pub fn dup(fd: RawIO) -> IOResult<RawIO> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         err_box!("unsupported operation")
     }
 
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        let res = unsafe { libc::dup(fd) };
+        err_io!(res)
+    }
     #[cfg(target_os = "linux")]
     {
         let res = unsafe { libc::dup(fd) };

@@ -22,6 +22,7 @@ use curvine_common::conf::FuseConf;
 use log::{error, info};
 use orpc::io::IOResult;
 use orpc::sys;
+use orpc::sys::close_raw_io;
 use orpc::sys::pipe::{AsyncFd, BorrowedFd, OwnedFd};
 use orpc::sys::{CString, RawIO};
 use std::path::PathBuf;
@@ -95,6 +96,9 @@ impl FuseMnt {
 
 impl Drop for FuseMnt {
     fn drop(&mut self) {
+        if self.fd != -1 {
+            close_raw_io(self.fd);
+        }
         fuse_umount_pure(self.path.as_path());
         info!("unmount {:?}", self.path)
     }

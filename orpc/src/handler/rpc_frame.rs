@@ -26,7 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::os::unix::io::{AsRawFd, RawFd};
 
 pub enum FrameSate {
@@ -279,7 +279,7 @@ impl RpcFrame {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 impl AsRawFd for RpcFrame {
     fn as_raw_fd(&self) -> RawFd {
         self.io.as_raw_fd()

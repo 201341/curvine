@@ -22,16 +22,16 @@ use crate::{io_loop_check, sys};
 use std::io::IoSlice;
 use tokio::io::Interest;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::io::{AsRawFd, RawFd};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::io::unix::AsyncFd as UnixAsyncFd;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 type AsyncInner = BorrowedFd;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 type AsyncInner = tokio::io::unix::AsyncFd<BorrowedFd>;
 
 // Asynchronous read and write pipeline, it is encapsulated on tokio AsyncFd.
@@ -39,12 +39,12 @@ pub struct AsyncFd(AsyncInner);
 
 impl AsyncFd {
     pub fn new(fd: BorrowedFd) -> IOResult<AsyncFd> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Ok(AsyncFd(fd))
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             if fd.is_blocking() {
                 err_box!("Blocking pipes cannot use async io")
@@ -65,24 +65,24 @@ impl AsyncFd {
     }
 
     pub fn raw_fd(&self) -> RawIO {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             panic!("unsupported operation")
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.0.as_raw_fd()
         }
     }
 
     pub async fn writable(&self) -> IOResult<()> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             err_box!("unsupported operation")
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let _ = self.0.writable().await?;
             Ok(())
@@ -90,12 +90,12 @@ impl AsyncFd {
     }
 
     pub async fn readable(&self) -> IOResult<()> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             err_box!("unsupported operation")
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let _ = self.0.readable().await?;
             Ok(())
@@ -107,12 +107,12 @@ impl AsyncFd {
         interest: Interest,
         mut f: impl FnMut(&BorrowedFd) -> IOResult<R>,
     ) -> IOResult<R> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             err_box!("unsupported operation")
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let res = self
                 .0
@@ -135,12 +135,12 @@ impl AsyncFd {
 
     // The task_inner method functions: remove the pipeline read and write events from the poller
     pub fn deregister(self) -> BorrowedFd {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             self.0
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.0.into_inner()
         }
@@ -159,7 +159,7 @@ impl AsyncFd {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl AsRawFd for AsyncFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()

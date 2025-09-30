@@ -16,7 +16,7 @@ use crate::io::IOResult;
 use crate::sys;
 use crate::sys::RawIO;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::os::unix::io::{AsRawFd, RawFd};
 
 // Encapsulated file descriptor describing the pipeline, which holds ownership of fd.
@@ -45,7 +45,7 @@ impl OwnedFd {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 impl AsRawFd for OwnedFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0
@@ -77,7 +77,7 @@ impl BorrowedFd {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 impl AsRawFd for BorrowedFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0
