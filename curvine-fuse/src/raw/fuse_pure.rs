@@ -26,6 +26,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::{mem, ptr};
 use std::process::{Command, Stdio};
 
+use nix::sys::uio;
+use nix::sys::socket::{self, AddressFamily, SockType, SockFlag, ControlMessageOwned, MsgFlags};
+use std::io::IoSliceMut;
+
 use orpc::io::IOResult;
 use orpc::sys::RawIO;
 use orpc::{err_io, err_box};
@@ -75,7 +79,7 @@ fn fuse_mount_fusermount(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
     let fusermount_child = builder.spawn()?;
     drop(child_fd);
 
-    let fd = match get_connection_fd(&parent_fd) {
+    let fd = match get_connection_fd(parent_fd.as_raw_fd()) {
         Ok(fd) => fd,
         Err(e) => {
             error!("get connection fd failed, err {:?}", e);
@@ -172,7 +176,17 @@ fn fuse_mount_sys(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
 
 #[cfg(target_os = "macos")]
 fn fuse_mount_darwin(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
-    let (child_fd, parent_fd) = UnixStream::pair()?;
+
+    let (child_fd, parent_fd) = match socket::socketpair(
+        AddressFamily::Unix,
+        SockType::Stream,
+        None,
+        SockFlag::empty(),
+    ) {
+        Err(err) => return err_box!(err.to_string()),
+
+        Ok((sock0, sock1)) => (sock0, sock1),
+    };     
     unsafe {
         libc::fcntl(child_fd.as_raw_fd(), libc::F_SETFD, 0);
     }
@@ -184,12 +198,12 @@ fn fuse_mount_darwin(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
     info!("Mounting at {}, with opts {:?}", mnt.display(), conf.get_fuse_opts());
     let mut env_vars = std::env::vars().collect::<Vec<_>>();
     env_vars.extend([
-        ("_FUSE_CALL_BY_LIB".to_string(), "1".to_string()),
-        ("_FUSE_DAEMON_PATH".to_string(), exec_path.to_string_lossy().to_string()),
         (FUSERMOUNT_COMM_ENV.to_string(), child_fd.as_raw_fd().to_string()),
+        ("_FUSE_CALL_BY_LIB".to_string(), "1".to_string()),
         ("_FUSE_COMMVERS".to_string(), "2".to_string()),
-        ("MOUNT_OSXFUSE_CALL_BY_LIB".to_string(), "1".to_string()),
-        ("MOUNT_OSXFUSE_DAEMON_PATH".to_string(), exec_path.to_string_lossy().to_string()),
+        ("_FUSE_DAEMON_PATH".to_string(), exec_path.to_string_lossy().to_string()),
+        //("MOUNT_OSXFUSE_CALL_BY_LIB".to_string(), "1".to_string()),
+        //("MOUNT_OSXFUSE_DAEMON_PATH".to_string(), exec_path.to_string_lossy().to_string()),
     ]);
     
     let mut mount_args = format!("-ofsname=curvinefs,-odebug"); 
@@ -198,7 +212,7 @@ fn fuse_mount_darwin(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
         if opt == "allow_root" {
             mount_args.push_str(",-oallow_root");
         } else if opt == "allow_other" {
-            mount_args.push_str(",-oallow_other");
+            //mount_args.push_str(",-oallow_other");
         } else if opt == "default_permissions" {
             mount_args.push_str(",-odefault_permissions");
         }
@@ -207,20 +221,15 @@ fn fuse_mount_darwin(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
     let mut builder = Command::new(detect_fusermount_bin());
     builder.stdout(Stdio::piped()).stderr(Stdio::piped());    
     builder
+        .envs(env_vars)
         .args(&mount_args.split(',').collect::<Vec<_>>())
-        .arg(mnt.to_string_lossy().to_string())
-        .envs(env_vars);
+        .arg(mnt.to_string_lossy().to_string());
     info!("Executing mount command: {:?}", builder);
-    let fusermount_child = builder.spawn()?;
-    drop(child_fd);
+    let fusermount_child = builder.spawn()?.wait();
 
     info!("Waiting for connection fd from mount command");
-    let fd = get_connection_fd(&parent_fd)?;
+    let fd = get_connection_fd(parent_fd.as_raw_fd())?;
     info!("Received fd {} from mount command", fd);
-    let mut parent_fd = Some(parent_fd);
-    drop(mem::take(&mut parent_fd));
-    let output = fusermount_child.wait_with_output()?;
-    info!("fusermount output: {}", String::from_utf8_lossy(&output.stdout));
 
     unsafe {
         libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
@@ -261,83 +270,41 @@ fn detect_fusermount_bin() -> String {
     FUSERMOUNT3_BIN.to_string()
 }
 
-fn get_connection_fd(socket_fd: &UnixStream) -> IOResult<RawIO> {
-    let mut io_vec_buf = [0u8];
-    let mut io_vec = libc::iovec {
-        iov_base: io_vec_buf.as_mut_ptr() as *mut libc::c_void,
-        iov_len: io_vec_buf.len(),
+fn get_connection_fd(socket_fd: RawFd) -> IOResult<RawIO> {
+    let mut buf = vec![]; // it seems 0 len still works well
+
+    let mut cmsg_buf = nix::cmsg_space!([RawFd; 1]);
+
+    let mut bufs = [IoSliceMut::new(&mut buf)];
+
+    let msg = match socket::recvmsg::<()>(
+        socket_fd,
+        &mut bufs[..],
+        Some(&mut cmsg_buf),
+        MsgFlags::empty(),
+    ) {
+        Err(err) => return err_box!(err.to_string()),
+
+        Ok(msg) => msg,
     };
 
-    let cmsg_buffer_len = unsafe { libc::CMSG_SPACE(mem::size_of::<libc::c_int>() as libc::c_uint) };
-    let mut cmsg_buffer = vec![0u8; cmsg_buffer_len as usize];
-
-    let mut message: libc::msghdr;
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-    {
-        message = libc::msghdr {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: &mut io_vec,
-            msg_iovlen: 1,
-            msg_control: cmsg_buffer.as_mut_ptr() as *mut libc::c_void,
-            msg_controllen: cmsg_buffer.len(),
-            msg_flags: 0,
-        };
-    }
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
-    {
-        message = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
-        message.msg_name = ptr::null_mut();
-        message.msg_namelen = 0;
-        message.msg_iov = &mut io_vec;
-        message.msg_iovlen = 1;
-        message.msg_control = (&mut cmsg_buffer).as_mut_ptr() as *mut libc::c_void;
-        message.msg_controllen = cmsg_buffer.len() as u32;
-        message.msg_flags = 0;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        message = libc::msghdr {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: &mut io_vec,
-            msg_iovlen: 1,
-            msg_control: (&mut cmsg_buffer).as_mut_ptr() as *mut libc::c_void,
-            msg_controllen: cmsg_buffer.len() as u32,
-            msg_flags: 0,
-        };
-    }
-    let mut result;
-    loop {
-        result = unsafe { libc::recvmsg(socket_fd.as_raw_fd(), &mut message, 0) };
-        if result != -1 {
-            break;
+    let mut cmsgs = match msg.cmsgs() {
+        Err(err) => return err_box!(err.to_string()),
+        Ok(cmsgs) => cmsgs,
+    };
+    let fd = if let Some(ControlMessageOwned::ScmRights(fds)) = cmsgs.next() {
+        if fds.is_empty() {
+            return err_box!("no fd received");
         }
-        let err = std::io::Error::last_os_error();
-        if err.kind() != ErrorKind::Interrupted {
-            error!("recvmsg failed, err {:?}", err);
-            return Err(err.into());
-        }
-        
-    }
 
-    if result == 0 {
-        return err_box!("Connection closed by peer");
-    }
+        fds[0]
+    } else {
+        return err_box!("get fuse fd failed");
+    };
 
-    unsafe {
-        let control_msg = libc::CMSG_FIRSTHDR(&message);
-        if (*control_msg).cmsg_type != libc::SCM_RIGHTS {
-            return err_box!("Unknown control message from fusermount: {}", (*control_msg).cmsg_type);
-        }
-        let fd_data = libc::CMSG_DATA(control_msg);
+    Ok(fd)
 
-        let fd = *(fd_data as *const libc::c_int);
-        if fd < 0 {
-            return err_box!("Invalid file descriptor received from fusermount: {}", fd);
-        } 
-        Ok(fd)
-    }
+
 }
 
 pub fn fuse_umount_pure(mnt: &Path) {

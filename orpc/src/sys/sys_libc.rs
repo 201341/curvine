@@ -74,9 +74,19 @@ pub fn close_raw_io(raw_io: RawIO) -> IOResult<()> {
 //     count: size_t
 // ) -> ssize_t
 pub fn send_file(fd_in: RawIO, fd_out: RawIO, off: Option<&mut i64>, len: usize) -> IOResult<CInt> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         err_box!("unsupported operation")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let off = match off {
+            Some(v) => *v,
+            None => 0,
+        };
+        let res = unsafe { libc::sendfile(fd_in, fd_out, off as libc::off_t, len as *mut libc::off_t, std::ptr::null_mut(), 0) };
+        err_io!(res)
     }
 
     #[cfg(target_os = "linux")]
@@ -139,9 +149,61 @@ pub fn splice(
     off_out: Option<&mut i64>,
     len: usize,
 ) -> IOResult<CInt> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         err_box!("unsupported operation")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+       let mut off_in = match off_in {
+            Some(v) => *v ,
+            None => 0,
+        };
+        let mut off_out = match off_out {
+            Some(v) => *v  ,
+            None => 0,
+        };
+        let mut buffer = vec![0u8; len.min(8192)]; 
+        let mut total_copied = 0;
+    
+        while total_copied < len {
+            let to_read = (len - total_copied).min(buffer.len());
+            let bytes_read = unsafe{
+                libc::pread(
+                fd_in,
+                buffer.as_mut_ptr() as *mut libc::c_void,
+                to_read,
+                off_in
+            )};
+            info!("pread fd_in: {}, buffer: {:p}, bytes_read: {}, off_in: {}", fd_in, buffer.as_ptr() as *const libc::c_void, bytes_read, off_in);
+            if bytes_read < 0 {
+                return err_io!(bytes_read); 
+            }
+            
+            if bytes_read == 0 {
+                break; // EOF
+            }
+            info!("pwrite: fd_out: {}, buffer: {:p}, bytes_read: {}, off_out: {}", fd_out, buffer.as_ptr() as *const libc::c_void, bytes_read, off_out);
+            let bytes_written = unsafe {
+                libc::pwrite(
+                    fd_out,
+                    buffer.as_ptr() as *const libc::c_void,
+                    bytes_read as usize,
+                    off_out
+                )
+            };
+
+            if bytes_written < 0 {
+                return err_io!(bytes_written); 
+            }
+            
+            total_copied += bytes_read as usize;
+            off_in += bytes_read as i64;
+            off_out += bytes_written as i64;
+        }
+        Ok(total_copied as CInt)
+
     }
 
     #[cfg(target_os = "linux")]

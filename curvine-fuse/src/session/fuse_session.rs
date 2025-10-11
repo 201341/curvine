@@ -86,7 +86,16 @@ impl<T: FileSystem> FuseSession<T> {
         let channels = std::mem::take(&mut self.channels);
         let _mnts = std::mem::take(&mut self.mnts);
 
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(not(target_os = "linux"))]
+        {
+            match Self::run_all(self.rt.clone(), self.fs.clone(), channels).await {
+                Ok(_) => {}
+                Err(err) => error!("fatal error, cause = {:?}", err),
+            }
+
+        }
+
+        #[cfg(any(target_os = "linux"))]
         {
             use tokio::signal::unix::{signal, SignalKind};
             let mut unix_sig = signal(SignalKind::terminate()).unwrap();

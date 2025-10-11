@@ -69,12 +69,17 @@ impl FuseMnt {
                      source fd {}, cause: {}",
                         *UNIX_KERNEL_VERSION, self.fd, e
                     );
-                    sys::dup(self.fd)?
+                    //sys::dup(self.fd)?
+                    self.fd
                 }
             }
         } else {
-            sys::dup(self.fd)?
+            //sys::dup(self.fd)?
+            self.fd
         };
+        if self.fd == clone_fd {
+            return Ok(BorrowedFd::new(clone_fd));
+        }
 
         let new_fd = OwnedFd::new(clone_fd);
         new_fd.set_blocking(false)?;

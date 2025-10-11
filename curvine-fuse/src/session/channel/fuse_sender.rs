@@ -48,7 +48,7 @@ impl FuseSender {
 
     // Send response data to fuse.
     pub async fn send(&mut self, rep: ResponseData) -> IOResult<()> {
-        self.splice(rep).await
+            self.splice(rep).await
     }
 
     pub async fn write(&mut self, rep: ResponseData) -> IOResult<()> {
