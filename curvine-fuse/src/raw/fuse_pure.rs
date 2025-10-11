@@ -59,34 +59,6 @@ pub fn options_to_flag(mount_option: &str) -> libc::c_ulong {
     flags
 }
 
-#[cfg(target_os = "macos")]
-pub fn options_to_flag(mount_option: &String) -> libc::c_long {
-    let mut flags = 0;
-    if mount_option.contains("ro") {
-        flags |= libc::MNT_RDONLY;
-    }
-    if mount_option.contains("nodev") {
-        flags |= libc::MNT_NODEV;
-    }
-    if mount_option.contains("nosuid") {
-        flags |= libc::MNT_NOSUID;
-    }
-    if mount_option.contains("noexec") {
-        flags |= libc::MNT_NOEXEC;
-    }
-    if mount_option.contains("noatime") {
-        flags |= libc::MNT_NOATIME;
-    }
-    if mount_option.contains("dirsync") {
-        flags |= libc::MNT_DIRSYNC;
-    }
-    if mount_option.contains("sync") {
-        flags |= libc::MNT_SYNCHRONOUS;
-    }
-
-    return flags;
-}
-
 pub fn fuse_mount_pure(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
     if conf.auto_umount() {
         // TODO: handle auto umount
@@ -142,16 +114,7 @@ fn fuse_mount_sys(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
                 c_options.as_ptr() as *const libc::c_void,
             )
         }
-        #[cfg(target_os = "macos")]
-        {
-            let mut c_options = CString::new(mount_options).unwrap();
-            libc::mount(
-                c_source.as_ptr(),
-                c_mountpoint.as_ptr(),
-                flags,
-                c_options.as_ptr() as *const libc::c_void,
-            )
-        }
+
     };
 
     if result != 0 {
@@ -189,10 +152,6 @@ pub fn fuse_umount_pure(mnt: &Path) {
         #[cfg(target_os = "linux")]
         {
             libc::umount2(c_mountpoint.as_ptr(), 0)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            libc::umount(c_mountpoint.as_ptr())
         }
     };
 
