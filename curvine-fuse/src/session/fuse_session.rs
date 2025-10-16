@@ -30,10 +30,11 @@ use orpc::runtime::{RpcRuntime, Runtime};
 use orpc::CommonResult;
 use std::sync::Arc;
 
+
 pub struct FuseSession<T> {
     rt: Arc<Runtime>,
     fs: Arc<T>,
-    mnts: Vec<FuseMnt>,
+    mnts: Vec<FuseMnFuseMntt>,
     channels: Vec<FuseChannel>,
 }
 
@@ -86,34 +87,22 @@ impl<T: FileSystem> FuseSession<T> {
         let channels = std::mem::take(&mut self.channels);
         let _mnts = std::mem::take(&mut self.mnts);
 
-        #[cfg(not(target_os = "linux"))]
-        {
-            match Self::run_all(self.rt.clone(), self.fs.clone(), channels).await {
-                Ok(_) => {}
-                Err(err) => error!("fatal error, cause = {:?}", err),
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut unix_sig = signal(SignalKind::terminate()).unwrap();
+
+        tokio::select! {
+            res = Self::run_all(self.rt.clone(), self.fs.clone(), channels) => {
+                if let Err(err) = res {
+                    error!("fatal error, cause = {:?}", err);
+                }
             }
 
-        }
+            _ = ctrl_c => {
+                info!("Receive ctrl_c signal, shutting down fuse");
+            }
 
-        #[cfg(any(target_os = "linux"))]
-        {
-            use tokio::signal::unix::{signal, SignalKind};
-            let mut unix_sig = signal(SignalKind::terminate()).unwrap();
-
-            tokio::select! {
-                res = Self::run_all(self.rt.clone(), self.fs.clone(), channels) => {
-                    if let Err(err) = res {
-                        error!("fatal error, cause = {:?}", err);
-                    }
-                }
-
-                _ = ctrl_c => {
-                    info!("Receive ctrl_c signal, shutting down fuse");
-                }
-
-                _ = unix_sig.recv()  => {
-                      info!("Received SIGTERM, shutting down fuse gracefully...");
-                }
+            _ = unix_sig.recv()  => {
+                    info!("Received SIGTERM, shutting down fuse gracefully...");
             }
         }
 
@@ -121,8 +110,10 @@ impl<T: FileSystem> FuseSession<T> {
         Ok(())
     }
 
+
     async fn run_all(rt: Arc<Runtime>, fs: Arc<T>, channels: Vec<FuseChannel>) -> CommonResult<()> {
         let mut handles = vec![];
+        
         for channel in channels {
             let receiver_future =
                 Self::fuse_receiver_future(rt.clone(), channel.receiver, fs.clone());
@@ -149,6 +140,36 @@ impl<T: FileSystem> FuseSession<T> {
         Ok(())
     }
 
+    async fn run_all_mac(rt: Arc<Runtime>, fs: Arc<T>) -> CommonResult<()> {
+        
+        loop {
+            match  
+                Ok(buf) => {
+                    // The parsing request failed, fuse may have been abnormal, and the program should be terminated.
+                    let req = FuseRequest::from_bytes(buf.freeze())?;
+
+                    rt.spawn(async move {
+                        let reply = receiver.new_reply(req.unique());
+                        if let Err(e) = Self::dispatch_meta(fs.clone(), req, reply).await {
+                            error!("Error dispatch request {}: {}", req.unique(), e);
+                        };
+                    });
+                    Self::dispatch(&rt, fs.clone(), req, reply).await;
+                }
+
+                Err(e) => match e.raw_error().raw_os_error() {
+                    Some(ENOENT) => continue,
+                    Some(EINTR) => continue,
+                    Some(EAGAIN) => continue,
+                    Some(ENODEV) => continue,
+                    _ => continue,
+                },
+            }
+
+        }
+
+        Ok(())
+    }
     // Write fuse message.
     async fn fuse_sender_future(mut sender: FuseSender) -> FuseResult<()> {
         while let Some(reply) = sender.recv().await {
@@ -179,8 +200,8 @@ impl<T: FileSystem> FuseSession<T> {
                     Some(ENOENT) => continue,
                     Some(EINTR) => continue,
                     Some(EAGAIN) => continue,
-                    Some(ENODEV) => break,
-                    _ => return Err(e.into()),
+                    Some(ENODEV) => continue,
+                    _ => continue,
                 },
             }
         }
@@ -190,14 +211,14 @@ impl<T: FileSystem> FuseSession<T> {
 
     async fn dispatch(rt: &Runtime, fs: Arc<T>, req: FuseRequest, reply: FuseResponse) {
         let unique = req.unique();
-        if reply.debug {
+        // if reply.debug {
             info!(
                 "receive unique: {}, code: {:?}, op: {:?}",
                 unique,
                 req.opcode(),
                 req.parse_operator().unwrap()
             );
-        }
+        // }
 
         if req.is_stream() {
             // To avoid the scheduling overhead caused by creating a large number of futures when reading and writing data, the read and write data request will send the request to the queue.

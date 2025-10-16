@@ -94,9 +94,9 @@ impl FuseResponse {
     pub async fn send_rep<T: Debug>(&self, res: FuseResult<T>) -> IOResult<isize> {
         match res {
             Ok(v) => {
-                if self.debug {
+                // if self.debug {
                     info!("send_rep unique {}, res: {:?}", self.unique, v);
-                }
+                // }
                 let data = DataSlice::Buffer(FuseUtils::struct_as_buf(&v));
                 self.send(FUSE_SUCCESS, vec![data]).await
             }

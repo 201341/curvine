@@ -66,31 +66,56 @@ fn fuse_mount_fusermount(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
     unsafe {
         libc::fcntl(child_fd.as_raw_fd(), libc::F_SETFD, 0);
     }
+    // move owned copies into the thread so we don't capture non-'static references
+    let mnt_owned = mnt.to_path_buf();
+    let child_fd_raw = child_fd.as_raw_fd();
+    let parent_fd_raw = parent_fd.as_raw_fd();
+    std::thread::spawn(move || {
+        // use std::process::Command here to avoid requiring a Tokio runtime inside the thread
+        let mut builder = std::process::Command::new(detect_fusermount_bin());
+        builder
+            .arg("--")
+            .arg(mnt_owned.to_string_lossy().to_string())
+            .env(FUSERMOUNT_COMM_ENV, child_fd_raw.to_string())
+            .env(FUSERMOUNT_COMM2_ENV, parent_fd_raw.to_string());
+        let child = builder.spawn();
+        match child {
+            Ok(mut child) => {
+                let status = child.wait();
+                match status {
+                    Ok(status) => {
+                        if !status.success() {
+                            error!("fusermount exited with status: {}", status);
+                        }
+                    }
+                    Err(e) => {
+                        error!("failed to wait on fusermount process: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("failed to spawn fusermount process: {}", e);
+            }
+        }
+    });
 
-    let mut builder = Command::new(detect_fusermount_bin());
-    builder.stdout(Stdio::piped()).stderr(Stdio::piped());
-    builder
-        .arg("--")
-        .arg(mnt)
-        .env(FUSERMOUNT_COMM_ENV, child_fd.as_raw_fd().to_string())
-        .env(FUSERMOUNT_COMM2_ENV, parent_fd.as_raw_fd().to_string());
 
+    //drop(child_fd);
 
-    let fusermount_child = builder.spawn()?;
-    drop(child_fd);
-
-    let fd = match get_connection_fd(parent_fd.as_raw_fd()) {
+    let fd =  match get_connection_fd(parent_fd.as_raw_fd()) {
         Ok(fd) => fd,
         Err(e) => {
-            error!("get connection fd failed, err {:?}", e);
-            return err_box!("get connection fd failed, err {:?}", e); 
+            error!("get fuse fd from fusermount failed, err {:?}", e);
+            return Err(e);
         }
     };
+     
+// let drop(child_fd);
+// });
+
     let mut parent_fd = Some(parent_fd);
     if !conf.auto_umount() {
         drop(mem::take(&mut parent_fd));
-        let output = fusermount_child.wait_with_output()?;
-        info!("fusermount output: {}", String::from_utf8_lossy(&output.stdout));
     } 
     
     unsafe {
@@ -196,36 +221,53 @@ fn fuse_mount_darwin(mnt: &Path, conf: &FuseConf) -> IOResult<RawIO> {
         Err(err) => return err_box!(err.to_string()),
     };
     info!("Mounting at {}, with opts {:?}", mnt.display(), conf.get_fuse_opts());
-    let mut env_vars = std::env::vars().collect::<Vec<_>>();
-    env_vars.extend([
-        (FUSERMOUNT_COMM_ENV.to_string(), child_fd.as_raw_fd().to_string()),
-        ("_FUSE_CALL_BY_LIB".to_string(), "1".to_string()),
-        ("_FUSE_COMMVERS".to_string(), "2".to_string()),
-        ("_FUSE_DAEMON_PATH".to_string(), exec_path.to_string_lossy().to_string()),
-        //("MOUNT_OSXFUSE_CALL_BY_LIB".to_string(), "1".to_string()),
-        //("MOUNT_OSXFUSE_DAEMON_PATH".to_string(), exec_path.to_string_lossy().to_string()),
-    ]);
-    
-    let mut mount_args = format!("-ofsname=curvinefs,-odebug"); 
-    let fuse_opts = conf.get_fuse_opts();
-    for opt in fuse_opts.iter() {
-        if opt == "allow_root" {
-            mount_args.push_str(",-oallow_root");
-        } else if opt == "allow_other" {
-            //mount_args.push_str(",-oallow_other");
-        } else if opt == "default_permissions" {
-            mount_args.push_str(",-odefault_permissions");
+    let mnt_owned = mnt.to_path_buf();
+    let child_fd_raw = child_fd.as_raw_fd();
+    let parent_fd_raw = parent_fd.as_raw_fd();
+    std::thread::spawn(move ||{
+        let mut builder = Command::new(detect_fusermount_bin());
+        let mut mount_args = format!("-ofsname=curvinefs,-odebug");
+        builder.stdout(Stdio::piped()).stderr(Stdio::piped());    
+        builder
+            .env(FUSERMOUNT_COMM_ENV.to_string(), child_fd.as_raw_fd().to_string())
+            .env("_FUSE_CALL_BY_LIB".to_string(), "1")
+            .env("_FUSE_COMMVERS".to_string(), "2")
+            .env("_FUSE_DAEMON_PATH".to_string(), exec_path)
+            .args(&mount_args.split(',').collect::<Vec<_>>())
+            .arg(mnt_owned.to_string_lossy().to_string());
+        info!("Executing mount command: {:?}", builder);
+        let child = builder.spawn();
+        match child {
+             Ok(mut child) => {
+                let status = child.wait();
+                match status {
+                    Ok(status) => {
+                        if !status.success() {
+                            error!("fusermount exited with status: {}", status);
+                        }
+                    }
+                    Err(e) => {
+                        error!("failed to wait on fusermount process: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("failed to spawn fusermount process: {}", e);
+            }
         }
-    }
+    });
+    
+    //let fuse_opts = conf.get_fuse_opts();
+    // for opt in fuse_opts.iter() {
+    //     if opt == "allow_root" {
+    //         mount_args.push_str(",-oallow_root");
+    //     } else if opt == "allow_other" {
+    //         //mount_args.push_str(",-oallow_other");
+    //     } else if opt == "default_permissions" {
+    //         mount_args.push_str(",-odefault_permissions");
+    //     }
+    // }
 
-    let mut builder = Command::new(detect_fusermount_bin());
-    builder.stdout(Stdio::piped()).stderr(Stdio::piped());    
-    builder
-        .envs(env_vars)
-        .args(&mount_args.split(',').collect::<Vec<_>>())
-        .arg(mnt.to_string_lossy().to_string());
-    info!("Executing mount command: {:?}", builder);
-    let fusermount_child = builder.spawn()?.wait();
 
     info!("Waiting for connection fd from mount command");
     let fd = get_connection_fd(parent_fd.as_raw_fd())?;
@@ -270,10 +312,11 @@ fn detect_fusermount_bin() -> String {
     FUSERMOUNT3_BIN.to_string()
 }
 
-fn get_connection_fd(socket_fd: RawFd) -> IOResult<RawIO> {
+fn get_connection_fd(socket_fd: i32) -> IOResult<RawIO> {
+    std::thread::sleep(std::time::Duration::from_millis(1000));
     let mut buf = vec![]; // it seems 0 len still works well
 
-    let mut cmsg_buf = nix::cmsg_space!([RawFd; 1]);
+    let mut cmsg_buf = nix::cmsg_space!([i32; 1]);
 
     let mut bufs = [IoSliceMut::new(&mut buf)];
 

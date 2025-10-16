@@ -447,6 +447,7 @@ pub fn read(fd: RawIO, buf: &mut [u8]) -> IOResult<CInt> {
             use libc::{self, c_void, size_t};
             libc::read(fd, buf.as_ptr() as *mut c_void, buf.len() as size_t)
         };
+        info!("read fd: {}, buf: {:p}, len: {}, res: {}", fd, buf.as_ptr() as *const libc::c_void, buf.len(), res);
 
         err_io!(res)
     }
@@ -595,12 +596,12 @@ pub fn dup(fd: RawIO) -> IOResult<RawIO> {
 // Get the page size.
 // pub unsafe extern "C" fn sysconf(name: c_int) -> c_long
 pub fn get_pagesize() -> IOResult<usize> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         err_box!("unsupported operation")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let res = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         err_io!(res)?;
